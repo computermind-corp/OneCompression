@@ -30,6 +30,9 @@ def _write_quant_config(tmp_path, quant_method, **extra):
         ("dbf", {}, "fallback", False),
         ("autobit", {}, "fallback", False),
         ("onebit", {}, "unsupported", False),
+        # MDBF is rejected up-front; the rotated row pins guard-before-rotation.
+        ("mdbf", {}, "unsupported", False),
+        ("mdbf", {"rotated": True}, "unsupported", False),
         ("gptq", {"rotated": True}, "fallback", True),
         ("mixed_gptq", {"rotated": True}, "fallback", True),
         # act-order uniform GPTQ must go to mixed (direct packing isn't block-aligned)
@@ -78,12 +81,95 @@ def test_needs_mixed_export_helpers():
     ) == {4, 2}
 
 
-def test_export_to_gguf_rejects_unsupported(tmp_path):
+@pytest.mark.parametrize("method", ["onebit", "mdbf"])
+@pytest.mark.parametrize("mode", ["auto", "direct", "mixed", "fallback"])
+def test_export_to_gguf_rejects_unsupported(tmp_path, method, mode):
+    """An explicit ``mode`` names a path, not a capability: it must not bypass the guard."""
     from onecomp.cpu.export.auto import export_to_gguf
 
-    d = _write_quant_config(tmp_path, "onebit")
+    d = _write_quant_config(tmp_path, method)
     with pytest.raises(ValueError, match="not supported"):
-        export_to_gguf(d, str(tmp_path / "out.gguf"))
+        export_to_gguf(d, str(tmp_path / "out.gguf"), mode=mode)
+
+
+@pytest.mark.parametrize("method", ["onebit", "mdbf"])
+def test_dequantize_to_hf_rejects_unsupported(tmp_path, method):
+    """The low-level entry point guards too; it is public and reached via other paths."""
+    from onecomp.cpu.export.dequantize import dequantize_to_hf
+
+    d = _write_quant_config(tmp_path, method)
+    with pytest.raises(ValueError, match="no dense reconstruction"):
+        dequantize_to_hf(d, str(tmp_path / "dense"))
+
+
+def test_reject_unfilled_weights_flags_random_init_tensors():
+    """An unknown layout leaves dense weights unsourced; that must raise, not warn."""
+    from onecomp.cpu.export.dequantize import _reject_unfilled_weights
+
+    missing = [
+        "model.layers.0.mlp.down_proj.weight",
+        "model.layers.0.mlp.down_proj.bias",
+        "model.rotary_emb.inv_freq",  # a buffer, legitimately absent
+    ]
+    with pytest.raises(RuntimeError, match="random init"):
+        _reject_unfilled_weights(missing, set(), "/ckpt", "future_method")
+
+
+def test_reject_unfilled_weights_ignores_buffers_and_retied_lm_head():
+    from onecomp.cpu.export.dequantize import _reject_unfilled_weights
+
+    _reject_unfilled_weights(["model.rotary_emb.inv_freq"], set(), "/ckpt", "gptq")
+    _reject_unfilled_weights(
+        ["lm_head.weight"], {"lm_head.weight"}, "/ckpt", "gptq"
+    )  # restored by tie_weights()
+
+
+def test_dequantize_to_hf_rejects_unknown_layout_end_to_end(tmp_path):
+    """``UNSUPPORTED_METHODS`` is an allow-list of *known* gaps; this pins the net.
+
+    A quant_method nobody listed (a future quantizer, or MDBF children hidden
+    inside an ``autobit`` checkpoint) reaches the dequantize body, drops its
+    tensors and leaves the dense weights at ``from_config`` random init. Only an
+    end-to-end call proves ``_reject_unfilled_weights`` is actually wired into
+    ``dequantize_to_hf``; the unit tests above pass even if the call is deleted.
+    """
+    from safetensors.torch import save_file
+    from transformers import LlamaConfig
+
+    from onecomp.cpu.export.dequantize import dequantize_to_hf
+
+    config = LlamaConfig(
+        hidden_size=16,
+        num_attention_heads=4,
+        num_hidden_layers=1,
+        num_key_value_heads=4,
+        intermediate_size=32,
+        max_position_embeddings=16,
+        vocab_size=32,
+        tie_word_embeddings=False,
+    )
+    # Keep the output outside the checkpoint so the shard glob cannot see it.
+    ckpt = tmp_path / "ckpt"
+    out = tmp_path / "dense"
+    ckpt.mkdir()
+
+    cfg_dict = config.to_dict()
+    cfg_dict["quantization_config"] = {"quant_method": "future_method", "bits": 2}
+    (ckpt / "config.json").write_text(json.dumps(cfg_dict), encoding="utf-8")
+
+    # A layer stored in some unknown factorized form: no ``.weight``, and keys
+    # neither the GPTQ nor the DBF reader recognises.
+    save_file(
+        {
+            "model.layers.0.self_attn.q_proj.factor_a": torch.zeros(16, 4),
+            "model.layers.0.self_attn.q_proj.factor_b": torch.zeros(4, 16),
+        },
+        str(ckpt / "model.safetensors"),
+    )
+
+    with pytest.raises(RuntimeError, match="random init"):
+        dequantize_to_hf(str(ckpt), str(out))
+    assert not (out / "model.safetensors").exists(), "must not write a broken model"
 
 
 def test_dbf_dequantize_matches_forward():

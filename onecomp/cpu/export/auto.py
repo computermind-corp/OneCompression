@@ -21,7 +21,8 @@ the dequantize fallback, which folds the Hadamard back into the weight
 (see :mod:`onecomp.cpu.export.rotation`) so the GGUF runs correctly with no
 online operation.
 
-OneBit (``quant_method == "onebit"``) is intentionally unsupported.
+OneBit and MDBF are rejected up-front, for every ``mode``; see
+``UNSUPPORTED_METHODS`` in :mod:`onecomp.cpu.export.checkpoint` for why.
 
 Copyright 2025-2026 Fujitsu Ltd.
 
@@ -35,6 +36,7 @@ from logging import getLogger
 from typing import Dict, Optional
 
 from onecomp.cpu.export.checkpoint import (
+    UNSUPPORTED_METHODS,
     configured_bit_widths,
     load_quant_config,
     needs_mixed_export,
@@ -43,18 +45,15 @@ from onecomp.cpu.export.checkpoint import (
 
 logger = getLogger(__name__)
 
-# Methods we will not export (no faithful GGUF representation / out of scope).
-_UNSUPPORTED = {"onebit"}
-
 
 def plan_export(quantized_dir: str) -> Dict[str, object]:
     """Decide which export path to use for ``quantized_dir`` (no side effects).
 
-    Returns a dict with ``method`` (direct / mixed / fallback / unsupported),
-    plus the parsed :class:`QuantMeta` fields, and a human-readable ``reason``.
+    Returns a dict with ``path`` (direct / mixed / fallback / unsupported), the
+    parsed :class:`QuantMeta` under ``meta``, and a human-readable ``reason``.
     """
     meta = read_quant_meta(quantized_dir)
-    if meta.quant_method in _UNSUPPORTED:
+    if meta.quant_method in UNSUPPORTED_METHODS:
         return {
             "path": "unsupported",
             "meta": meta,
@@ -108,23 +107,33 @@ def export_to_gguf(
         quantized_dir: OneComp quantized checkpoint directory.
         out_gguf: Output ``.gguf`` path.
         mode: ``auto`` (route by quant_method/rotation) or force a path with
-            ``direct`` / ``mixed`` / ``fallback``.
+            ``direct`` / ``mixed`` / ``fallback``. Forcing a path does not
+            override support: an unsupported ``quant_method`` is rejected for
+            every ``mode``.
         qtype: target type for the fallback (dequantize) path, e.g. ``Q4_K_M``.
         original_model: optional original FP model dir for skeleton metadata.
         work_dir: scratch directory.
 
     Returns:
         Summary dict including the chosen ``path`` and per-path details.
+
+    Raises:
+        ValueError: If ``quant_method`` is unsupported (any ``mode``), or if
+            ``mode`` is not one of auto/direct/mixed/fallback.
     """
     plan = plan_export(quantized_dir)
-    chosen = mode if mode != "auto" else plan["path"]
     meta = plan["meta"]
 
-    if chosen == "unsupported":
+    # Test the *plan*, not the resolved mode: an explicit ``mode=`` names a path,
+    # not a capability, so forcing one must not route an unsupported method into
+    # an exporter that cannot represent it.
+    if plan["path"] == "unsupported":
         raise ValueError(
             f"quant_method={meta.quant_method!r} is not supported for CPU/GGUF export. "
             "Supported: gptq, mixed_gptq, jointq, rtn, dbf, autobit (and rotated variants)."
         )
+
+    chosen = mode if mode != "auto" else plan["path"]
 
     logger.info(
         "export_to_gguf: %s -> %s | method=%s rotated=%s | path=%s (%s)",

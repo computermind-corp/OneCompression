@@ -19,7 +19,12 @@ from typing import Dict
 
 import torch
 
-from onecomp.cpu.export.checkpoint import dequantize_layer, iter_gptq_layers, read_quant_meta
+from onecomp.cpu.export.checkpoint import (
+    UNSUPPORTED_METHODS,
+    dequantize_layer,
+    iter_gptq_layers,
+    read_quant_meta,
+)
 
 logger = getLogger(__name__)
 
@@ -68,6 +73,38 @@ def _dequantize_dbf_layers(model, state, torch_dtype):
     return dense, consumed
 
 
+def _reject_unfilled_weights(
+    missing: list[str], retied: set[str], save_directory: str, quant_method: str
+) -> None:
+    """Fail when ``load_state_dict(strict=False)`` left a weight at its random init.
+
+    ``strict=False`` is needed because the checkpoint legitimately lacks
+    non-persistent buffers, but it equally swallows a whole quantizer's worth of
+    unreconstructed weights.  Only ``.weight`` / ``.bias`` keys are checked, so
+    buffers stay exempt while any dense tensor that found no source is loud.
+
+    Args:
+        missing: ``missing_keys`` from ``load_state_dict``.
+        retied: Keys since restored by ``tie_weights()``.
+        save_directory: Checkpoint directory, for the error message.
+        quant_method: Checkpoint's ``quant_method``, for the error message.
+
+    Raises:
+        RuntimeError: If any weight/bias key had no source.
+    """
+    unfilled = sorted(
+        key for key in missing if key.endswith((".weight", ".bias")) and key not in retied
+    )
+    if not unfilled:
+        return
+    raise RuntimeError(
+        f"{len(unfilled)} tensor(s) in {save_directory} (quant_method={quant_method!r}) "
+        f"had no source and would be exported as random init: {unfilled[:8]}"
+        f"{' ...' if len(unfilled) > 8 else ''}. This layout has no dense "
+        "reconstruction implemented in onecomp.cpu.export.dequantize."
+    )
+
+
 def dequantize_to_hf(
     save_directory: str,
     output_directory: str,
@@ -82,9 +119,25 @@ def dequantize_to_hf(
 
     Returns:
         ``output_directory``.
+
+    Raises:
+        ValueError: If the checkpoint's ``quant_method`` has no dense
+            reconstruction implemented here (see ``UNSUPPORTED_METHODS``).
+        RuntimeError: If any weight/bias tensor ends up with no source in the
+            checkpoint, which would ship the model's random init.
     """
     from safetensors.torch import load_file
     from transformers import AutoConfig, AutoModelForCausalLM
+
+    # Guard here as well as in ``plan_export``: this is a public entry point and
+    # is also reached via ``export_via_dequantize`` / the skeleton builder.
+    meta = read_quant_meta(save_directory)
+    if meta.quant_method in UNSUPPORTED_METHODS:
+        raise ValueError(
+            f"quant_method={meta.quant_method!r} has no dense reconstruction "
+            "implemented in dequantize_to_hf; its tensors would be dropped and the "
+            "result would carry randomly initialised weights."
+        )
 
     os.makedirs(output_directory, exist_ok=True)
 
@@ -107,7 +160,6 @@ def dequantize_to_hf(
     dense_state: Dict[str, torch.Tensor] = {}
     quant_keys = set()
     n_layers = 0
-    meta = read_quant_meta(save_directory)
     if meta.is_gptq_family:
         for layer in iter_gptq_layers(save_directory):
             dense_state[layer.weight_key] = dequantize_layer(layer).to(torch_dtype)
@@ -144,11 +196,15 @@ def dequantize_to_hf(
     # Gemma) rely on. Without re-tying, lm_head keeps its random init and the
     # exported model emits garbage. Re-establish the tie when the checkpoint did
     # not carry a separate lm_head weight.
+    retied = set()
     if getattr(model.config, "tie_word_embeddings", False) and not any(
         k.endswith("lm_head.weight") for k in dense_state
     ):
         model.tie_weights()
+        retied = {k for k in missing if k.endswith("lm_head.weight")}
         logger.info("Re-tied lm_head to embed_tokens (tie_word_embeddings=True)")
+
+    _reject_unfilled_weights(missing, retied, save_directory, meta.quant_method)
 
     model.save_pretrained(output_directory, safe_serialization=True)
     _copy_tokenizer(save_directory, output_directory)
