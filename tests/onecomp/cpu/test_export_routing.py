@@ -10,15 +10,78 @@ Copyright 2025-2026 Fujitsu Ltd.
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import torch
+
+_MDBF_IN_FEATURES = 16
+_MDBF_OUT_FEATURES = 8
+_MDBF_RANK = 6
 
 
 def _write_quant_config(tmp_path, quant_method, **extra):
     cfg = {"model_type": "llama", "quantization_config": {"quant_method": quant_method, **extra}}
     (tmp_path / "config.json").write_text(json.dumps(cfg))
     return str(tmp_path)
+
+
+class _MDBFDenseStub(torch.nn.Module):
+    """Dense model exposing one MDBF target layer."""
+
+    def __init__(self, *, with_bias: bool) -> None:
+        """Create the target dense linear."""
+        super().__init__()
+        self.lin = torch.nn.Linear(_MDBF_IN_FEATURES, _MDBF_OUT_FEATURES, bias=with_bias)
+
+
+def _build_mdbf_state(
+    path_count: int, amplitude_rank: int, with_bias: bool
+) -> tuple[torch.nn.Module, dict[str, torch.Tensor]]:
+    """Build a deterministic MDBF reference layer and flat checkpoint state.
+
+    Args:
+        path_count: Number of MDBF paths.
+        amplitude_rank: Multi-scale amplitude rank.
+        with_bias: Whether the layer carries bias.
+
+    Returns:
+        Reference MDBF layer and its state dict under the ``lin`` prefix.
+    """
+    from onecomp.quantizer.mdbf.initialize import MDBFParams
+    from onecomp.quantizer.mdbf.mdbf_layer import MultipathMDBFLinear
+
+    def _make_params(seed: int) -> MDBFParams:
+        """Build deterministic MDBF parameters for one path."""
+        generator = torch.Generator().manual_seed(seed)
+
+        def _sign(*shape: int) -> torch.Tensor:
+            """Build a deterministic sign tensor."""
+            values = torch.randint(0, 2, shape, generator=generator)
+            return (values * 2 - 1).to(torch.float32)
+
+        def _amplitude(*shape: int) -> torch.Tensor:
+            """Build a deterministic positive amplitude tensor."""
+            return torch.rand(*shape, generator=generator) + 0.5
+
+        return MDBFParams(
+            A_sign=_sign(_MDBF_OUT_FEATURES, _MDBF_RANK),
+            B_sign=_sign(_MDBF_RANK, _MDBF_IN_FEATURES),
+            A_amp=_amplitude(_MDBF_OUT_FEATURES, amplitude_rank),
+            B_amp=_amplitude(_MDBF_IN_FEATURES, amplitude_rank),
+            Q_U_amp=_amplitude(_MDBF_RANK, amplitude_rank),
+            Q_V_amp=_amplitude(_MDBF_RANK, amplitude_rank),
+        )
+
+    bias_generator = torch.Generator().manual_seed(999)
+    bias = torch.randn(_MDBF_OUT_FEATURES, generator=bias_generator) if with_bias else None
+    reference = MultipathMDBFLinear(
+        [_make_params(seed) for seed in range(path_count)],
+        bias=bias,
+        use_gemlite=False,
+    ).eval()
+    state = {f"lin.{key}": tensor for key, tensor in reference.state_dict().items()}
+    return reference, state
 
 
 @pytest.mark.parametrize(
@@ -112,6 +175,20 @@ def test_export_to_gguf_rejects_incompatible_forced_mode(
     d = _write_quant_config(tmp_path, method, **extra)
     with pytest.raises(ValueError, match="needs the AutoGPTQ block layout"):
         export_to_gguf(d, str(tmp_path / "out.gguf"), mode=mode)
+
+
+@pytest.mark.parametrize("mode", ["auto", "fallback"])
+def test_export_to_gguf_mdbf_dispatches_fallback(tmp_path: Path, mode: str) -> None:
+    """The public exporter dispatches supported MDBF modes to fallback."""
+    from onecomp.cpu.export.auto import export_to_gguf
+
+    quantized_dir = _write_quant_config(tmp_path, "mdbf")
+    out_gguf = str(tmp_path / "out.gguf")
+    with patch("onecomp.cpu.export.fallback.export_via_dequantize") as export_mock:
+        result = export_to_gguf(quantized_dir, out_gguf, mode=mode)
+
+    export_mock.assert_called_once_with(quantized_dir, out_gguf, qtype="Q4_K_M", work_dir=None)
+    assert result["path"] == "fallback"
 
 
 @pytest.mark.parametrize("method", ["onebit"])
@@ -248,63 +325,119 @@ def test_mdbf_dequantize_matches_forward(
 ) -> None:
     """Dense MDBF reconstruction matches its factorized fp32 forward."""
     from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers
-    from onecomp.quantizer.mdbf.initialize import MDBFParams
-    from onecomp.quantizer.mdbf.mdbf_layer import MultipathMDBFLinear
 
-    in_features, out_features, rank = 16, 8, 6
-
-    def _make_params(seed: int) -> MDBFParams:
-        """Build deterministic MDBF parameters for one path."""
-        generator = torch.Generator().manual_seed(seed)
-
-        def _sign(*shape: int) -> torch.Tensor:
-            """Build a deterministic sign tensor."""
-            values = torch.randint(0, 2, shape, generator=generator)
-            return (values * 2 - 1).to(torch.float32)
-
-        def _amplitude(*shape: int) -> torch.Tensor:
-            """Build a deterministic positive amplitude tensor."""
-            return torch.rand(*shape, generator=generator) + 0.5
-
-        return MDBFParams(
-            A_sign=_sign(out_features, rank),
-            B_sign=_sign(rank, in_features),
-            A_amp=_amplitude(out_features, amplitude_rank),
-            B_amp=_amplitude(in_features, amplitude_rank),
-            Q_U_amp=_amplitude(rank, amplitude_rank),
-            Q_V_amp=_amplitude(rank, amplitude_rank),
-        )
-
-    bias = torch.randn(out_features) if with_bias else None
-    reference = MultipathMDBFLinear(
-        [_make_params(seed) for seed in range(path_count)],
-        bias=bias,
-        use_gemlite=False,
-    ).eval()
-    state = {f"lin.{key}": tensor for key, tensor in reference.state_dict().items()}
+    reference, state = _build_mdbf_state(path_count, amplitude_rank, with_bias)
     save_directory = _write_quant_config(tmp_path, "mdbf", P=path_count)
-
-    class _Stub(torch.nn.Module):
-        """Dense model exposing the MDBF target layer."""
-
-        def __init__(self) -> None:
-            """Create the target dense linear."""
-            super().__init__()
-            self.lin = torch.nn.Linear(in_features, out_features, bias=with_bias)
-
-    dense, consumed = _dequantize_mdbf_layers(_Stub(), state, torch.float32, save_directory)
+    dense, consumed = _dequantize_mdbf_layers(
+        _MDBFDenseStub(with_bias=with_bias), state, torch.float32, save_directory
+    )
 
     assert consumed == set(state)
     assert set(dense) == ({"lin.weight", "lin.bias"} if with_bias else {"lin.weight"})
 
     generator = torch.Generator().manual_seed(100)
-    inputs = torch.randn(5, in_features, generator=generator)
+    inputs = torch.randn(5, _MDBF_IN_FEATURES, generator=generator)
     with torch.no_grad():
         expected = reference(inputs.float())
         actual = inputs.float() @ dense["lin.weight"].t()
         if with_bias:
             actual += dense["lin.bias"].float()
     torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-3)
+
+
+def test_mdbf_dequantize_rejects_missing_path(tmp_path: Path) -> None:
+    """A path missing from the checkpoint must not silently reduce P."""
+    from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers
+
+    _, state = _build_mdbf_state(path_count=2, amplitude_rank=1, with_bias=False)
+    damaged = {key: tensor for key, tensor in state.items() if not key.startswith("lin.paths.1.")}
+    save_directory = _write_quant_config(tmp_path, "mdbf", P=2)
+
+    with pytest.raises(ValueError, match="Incomplete MDBF checkpoint"):
+        _dequantize_mdbf_layers(
+            _MDBFDenseStub(with_bias=False), damaged, torch.float32, save_directory
+        )
+
+
+def test_mdbf_dequantize_rejects_rank_mismatch(tmp_path: Path) -> None:
+    """A silent factor-rank mismatch is rejected using packed byte counts."""
+    from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers
+
+    _, state = _build_mdbf_state(path_count=1, amplitude_rank=2, with_bias=False)
+    state["lin.paths.0.Q_U_amp"] = state["lin.paths.0.Q_U_amp"][:-1]
+    state["lin.paths.0.Q_V_amp"] = state["lin.paths.0.Q_V_amp"][:-1]
+    save_directory = _write_quant_config(tmp_path, "mdbf", P=1)
+
+    with pytest.raises(ValueError, match="A_sign_packed"):
+        _dequantize_mdbf_layers(
+            _MDBFDenseStub(with_bias=False), state, torch.float32, save_directory
+        )
+
+
+@pytest.mark.parametrize("tensor_name", ["A_amp", "B_amp", "Q_V_amp"])
+def test_mdbf_dequantize_rejects_amp_shape_mismatch(tmp_path: Path, tensor_name: str) -> None:
+    """Singleton amplitude axes must not broadcast into a wrong weight."""
+    from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers
+
+    _, state = _build_mdbf_state(path_count=1, amplitude_rank=2, with_bias=False)
+    key = f"lin.paths.0.{tensor_name}"
+    state[key] = state[key][:1]
+    save_directory = _write_quant_config(tmp_path, "mdbf", P=1)
+
+    with pytest.raises(ValueError, match=tensor_name):
+        _dequantize_mdbf_layers(
+            _MDBFDenseStub(with_bias=False), state, torch.float32, save_directory
+        )
+
+
+@pytest.mark.parametrize("factor_dimension", ["rank", "amplitude_rank"])
+def test_mdbf_dequantize_rejects_empty_factor_dimension(
+    tmp_path: Path, factor_dimension: str
+) -> None:
+    """Empty factor dimensions must not reconstruct an all-zero weight."""
+    from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers
+
+    _, state = _build_mdbf_state(path_count=1, amplitude_rank=2, with_bias=False)
+    prefix = "lin.paths.0."
+    if factor_dimension == "rank":
+        for tensor_name in ("Q_U_amp", "Q_V_amp"):
+            state[prefix + tensor_name] = state[prefix + tensor_name][:0]
+    else:
+        for tensor_name in ("A_amp", "B_amp", "Q_U_amp", "Q_V_amp"):
+            state[prefix + tensor_name] = state[prefix + tensor_name][:, :0]
+    save_directory = _write_quant_config(tmp_path, "mdbf", P=1)
+
+    with pytest.raises(ValueError, match="positive rank and amplitude dimensions"):
+        _dequantize_mdbf_layers(
+            _MDBFDenseStub(with_bias=False), state, torch.float32, save_directory
+        )
+
+
+@pytest.mark.parametrize("tensor_name", ["_A_sign_shape", "_B_sign_shape"])
+def test_mdbf_dequantize_rejects_sign_shape_mismatch(tmp_path: Path, tensor_name: str) -> None:
+    """Persisted sign shapes must agree with reconstruction dimensions."""
+    from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers
+
+    _, state = _build_mdbf_state(path_count=1, amplitude_rank=1, with_bias=False)
+    key = f"lin.paths.0.{tensor_name}"
+    state[key] = state[key] + 1
+    save_directory = _write_quant_config(tmp_path, "mdbf", P=1)
+
+    with pytest.raises(ValueError, match=tensor_name):
+        _dequantize_mdbf_layers(
+            _MDBFDenseStub(with_bias=False), state, torch.float32, save_directory
+        )
+
+
+def test_mdbf_layer_absent_from_dense_model_raises(tmp_path: Path) -> None:
+    """A checkpoint MDBF layer without a dense target is a mapping error."""
+    from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers
+
+    _, state = _build_mdbf_state(path_count=1, amplitude_rank=1, with_bias=False)
+    save_directory = _write_quant_config(tmp_path, "mdbf", P=1)
+
+    with pytest.raises(RuntimeError, match="no matching nn.Linear"):
+        _dequantize_mdbf_layers(torch.nn.Module(), state, torch.float32, save_directory)
 
 
 def test_hadamard_defold_roundtrip():
