@@ -9,6 +9,7 @@ Copyright 2025-2026 Fujitsu Ltd.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -236,6 +237,73 @@ def test_dbf_dequantize_matches_forward():
         expected = ref(x).float()
         got = (x.float() @ w.t()) + b.float()
     assert torch.allclose(expected, got, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.parametrize("path_count", [1, 2])
+@pytest.mark.parametrize("amplitude_rank", [1, 2])
+@pytest.mark.parametrize("with_bias", [False, True])
+def test_mdbf_dequantize_matches_forward(
+    tmp_path: Path, path_count: int, amplitude_rank: int, with_bias: bool
+) -> None:
+    """Dense MDBF reconstruction matches its factorized fp32 forward."""
+    from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers
+    from onecomp.quantizer.mdbf.initialize import MDBFParams
+    from onecomp.quantizer.mdbf.mdbf_layer import MultipathMDBFLinear
+
+    in_features, out_features, rank = 16, 8, 6
+
+    def _make_params(seed: int) -> MDBFParams:
+        """Build deterministic MDBF parameters for one path."""
+        generator = torch.Generator().manual_seed(seed)
+
+        def _sign(*shape: int) -> torch.Tensor:
+            """Build a deterministic sign tensor."""
+            values = torch.randint(0, 2, shape, generator=generator)
+            return (values * 2 - 1).to(torch.float32)
+
+        def _amplitude(*shape: int) -> torch.Tensor:
+            """Build a deterministic positive amplitude tensor."""
+            return torch.rand(*shape, generator=generator) + 0.5
+
+        return MDBFParams(
+            A_sign=_sign(out_features, rank),
+            B_sign=_sign(rank, in_features),
+            A_amp=_amplitude(out_features, amplitude_rank),
+            B_amp=_amplitude(in_features, amplitude_rank),
+            Q_U_amp=_amplitude(rank, amplitude_rank),
+            Q_V_amp=_amplitude(rank, amplitude_rank),
+        )
+
+    bias = torch.randn(out_features) if with_bias else None
+    reference = MultipathMDBFLinear(
+        [_make_params(seed) for seed in range(path_count)],
+        bias=bias,
+        use_gemlite=False,
+    ).eval()
+    state = {f"lin.{key}": tensor for key, tensor in reference.state_dict().items()}
+    save_directory = _write_quant_config(tmp_path, "mdbf", P=path_count)
+
+    class _Stub(torch.nn.Module):
+        """Dense model exposing the MDBF target layer."""
+
+        def __init__(self) -> None:
+            """Create the target dense linear."""
+            super().__init__()
+            self.lin = torch.nn.Linear(in_features, out_features, bias=with_bias)
+
+    dense, consumed = _dequantize_mdbf_layers(_Stub(), state, torch.float32, save_directory)
+
+    assert consumed == set(state)
+    assert set(dense) == ({"lin.weight", "lin.bias"} if with_bias else {"lin.weight"})
+
+    generator = torch.Generator().manual_seed(100)
+    inputs = torch.randn(5, in_features, generator=generator)
+    with torch.no_grad():
+        expected = reference(inputs.float())
+        actual = inputs.float() @ dense["lin.weight"].t()
+        if with_bias:
+            actual += dense["lin.bias"].float()
+    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-3)
 
 
 def test_hadamard_defold_roundtrip():
