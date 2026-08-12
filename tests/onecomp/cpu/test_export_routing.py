@@ -48,35 +48,22 @@ def _build_mdbf_state(
     Returns:
         Reference MDBF layer and its state dict under the ``lin`` prefix.
     """
-    from onecomp.quantizer.mdbf.initialize import MDBFParams
     from onecomp.quantizer.mdbf.mdbf_layer import MultipathMDBFLinear
-
-    def _make_params(seed: int) -> MDBFParams:
-        """Build deterministic MDBF parameters for one path."""
-        generator = torch.Generator().manual_seed(seed)
-
-        def _sign(*shape: int) -> torch.Tensor:
-            """Build a deterministic sign tensor."""
-            values = torch.randint(0, 2, shape, generator=generator)
-            return (values * 2 - 1).to(torch.float32)
-
-        def _amplitude(*shape: int) -> torch.Tensor:
-            """Build a deterministic positive amplitude tensor."""
-            return torch.rand(*shape, generator=generator) + 0.5
-
-        return MDBFParams(
-            A_sign=_sign(_MDBF_OUT_FEATURES, _MDBF_RANK),
-            B_sign=_sign(_MDBF_RANK, _MDBF_IN_FEATURES),
-            A_amp=_amplitude(_MDBF_OUT_FEATURES, amplitude_rank),
-            B_amp=_amplitude(_MDBF_IN_FEATURES, amplitude_rank),
-            Q_U_amp=_amplitude(_MDBF_RANK, amplitude_rank),
-            Q_V_amp=_amplitude(_MDBF_RANK, amplitude_rank),
-        )
+    from tests.onecomp.fixtures.mdbf_checkpoint import make_mdbf_params
 
     bias_generator = torch.Generator().manual_seed(999)
     bias = torch.randn(_MDBF_OUT_FEATURES, generator=bias_generator) if with_bias else None
     reference = MultipathMDBFLinear(
-        [_make_params(seed) for seed in range(path_count)],
+        [
+            make_mdbf_params(
+                _MDBF_OUT_FEATURES,
+                _MDBF_IN_FEATURES,
+                _MDBF_RANK,
+                amplitude_rank,
+                seed,
+            )
+            for seed in range(path_count)
+        ],
         bias=bias,
         use_gemlite=False,
     ).eval()
