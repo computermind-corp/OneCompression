@@ -31,9 +31,9 @@ def _write_quant_config(tmp_path, quant_method, **extra):
         ("dbf", {}, "fallback", False),
         ("autobit", {}, "fallback", False),
         ("onebit", {}, "unsupported", False),
-        # MDBF is rejected up-front; the rotated row pins guard-before-rotation.
-        ("mdbf", {}, "unsupported", False),
-        ("mdbf", {"rotated": True}, "unsupported", False),
+        # MDBF has no lossless layout; rotated MDBF uses the same fallback.
+        ("mdbf", {}, "fallback", False),
+        ("mdbf", {"rotated": True}, "fallback", False),
         ("gptq", {"rotated": True}, "fallback", True),
         ("mixed_gptq", {"rotated": True}, "fallback", True),
         # act-order uniform GPTQ must go to mixed (direct packing isn't block-aligned)
@@ -82,7 +82,7 @@ def test_needs_mixed_export_helpers():
     ) == {4, 2}
 
 
-@pytest.mark.parametrize("method", ["onebit", "mdbf"])
+@pytest.mark.parametrize("method", ["onebit"])
 @pytest.mark.parametrize("mode", ["auto", "direct", "mixed", "fallback"])
 def test_export_to_gguf_rejects_unsupported(tmp_path, method, mode):
     """An explicit ``mode`` names a path, not a capability: it must not bypass the guard."""
@@ -97,6 +97,7 @@ def test_export_to_gguf_rejects_unsupported(tmp_path, method, mode):
     "method,extra",
     [
         ("dbf", {}),
+        ("mdbf", {}),
         ("autobit", {}),
         ("gptq", {"rotated": True}),
     ],
@@ -113,7 +114,7 @@ def test_export_to_gguf_rejects_incompatible_forced_mode(
         export_to_gguf(d, str(tmp_path / "out.gguf"), mode=mode)
 
 
-@pytest.mark.parametrize("method", ["onebit", "mdbf"])
+@pytest.mark.parametrize("method", ["onebit"])
 def test_dequantize_to_hf_rejects_unsupported(tmp_path, method):
     """The low-level entry point guards too; it is public and reached via other paths."""
     from onecomp.cpu.export.dequantize import dequantize_to_hf

@@ -130,7 +130,8 @@ def export_to_gguf(
     if plan["path"] == "unsupported":
         raise ValueError(
             f"quant_method={meta.quant_method!r} is not supported for CPU/GGUF export. "
-            "Supported: gptq, mixed_gptq, jointq, rtn, dbf, autobit (and rotated variants)."
+            "Supported: gptq, mixed_gptq, jointq, rtn, dbf, mdbf, autobit "
+            "(and rotated variants)."
         )
 
     if mode in ("direct", "mixed") and not meta.supports_direct:

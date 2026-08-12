@@ -277,8 +277,8 @@ def dequantize_to_hf(
     Raises:
         ValueError: If the checkpoint's ``quant_method`` has no dense
             reconstruction implemented here (see ``UNSUPPORTED_METHODS``).
-        RuntimeError: If any weight/bias tensor ends up with no source in the
-            checkpoint, which would ship the model's random init.
+        RuntimeError: If an MDBF layer cannot be mapped to the dense model, or
+            any weight/bias tensor ends up with no checkpoint source.
     """
     from safetensors.torch import load_file
     from transformers import AutoConfig, AutoModelForCausalLM
@@ -326,6 +326,13 @@ def dequantize_to_hf(
     dbf_dense, dbf_consumed = _dequantize_dbf_layers(model, state, torch_dtype)
     dense_state.update(dbf_dense)
     quant_keys |= dbf_consumed
+
+    # MDBF layers use a nested paths.{p}.* layout.
+    mdbf_dense, mdbf_consumed = _dequantize_mdbf_layers(
+        model, state, torch_dtype, save_directory
+    )
+    dense_state.update(mdbf_dense)
+    quant_keys |= mdbf_consumed
 
     for key, tensor in state.items():
         if key in quant_keys:

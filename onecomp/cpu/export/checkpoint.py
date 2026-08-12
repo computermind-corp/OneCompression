@@ -86,14 +86,9 @@ class QuantMeta:
 # (so iter_gptq_layers can read them): GPTQ, QEP (same codes), JointQ, RTN, mixed.
 _GPTQ_FAMILY = {"gptq", "mixed_gptq", "jointq", "rtn"}
 
-# quant_method values with no GGUF export at all. ``onebit`` is out of scope by
-# request; ``mdbf`` has no GPTQ layout and no dequantize reconstruction *yet*
-# (implementable via MultipathMDBFLinear.get_weight), so no exporter can
-# represent it today -- the fallback path would silently ship randomly
-# initialised weights. Lives here (not in ``auto``) so the low-level
-# ``dequantize_to_hf`` entry point can reject them too, not just the
-# ``export_to_gguf`` router.
-UNSUPPORTED_METHODS = {"onebit", "mdbf"}
+# quant_method values with no GGUF export at all. Lives here (not in ``auto``)
+# so the low-level ``dequantize_to_hf`` entry point rejects OneBit too.
+UNSUPPORTED_METHODS = {"onebit"}
 
 
 def configured_bit_widths(quant_config: dict) -> set:
@@ -192,7 +187,7 @@ def iter_gptq_layers(save_directory: str) -> Iterator[GPTQLayer]:
     """Yield every GPTQ-quantized linear in a saved OneComp model, fully unpacked.
 
     Only ``gptq`` / ``mixed_gptq`` checkpoints expose ``qweight`` tensors; other
-    methods (dbf/onebit) are skipped here and must use the dequantize path.
+    methods (dbf/mdbf/onebit) are skipped here and must use the dequantize path.
     """
     quant_config = load_quant_config(save_directory)
     state = _load_state_dict(save_directory)
