@@ -133,6 +133,13 @@ def export_to_gguf(
             "Supported: gptq, mixed_gptq, jointq, rtn, dbf, autobit (and rotated variants)."
         )
 
+    if mode in ("direct", "mixed") and not meta.supports_direct:
+        raise ValueError(
+            f"mode={mode!r} needs the AutoGPTQ block layout and no online Hadamard "
+            f"(quant_method={meta.quant_method!r}, rotated={meta.rotated}); "
+            "use mode='fallback'."
+        )
+
     chosen = mode if mode != "auto" else plan["path"]
 
     logger.info(

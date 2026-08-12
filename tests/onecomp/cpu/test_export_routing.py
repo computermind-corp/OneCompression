@@ -92,6 +92,26 @@ def test_export_to_gguf_rejects_unsupported(tmp_path, method, mode):
         export_to_gguf(d, str(tmp_path / "out.gguf"), mode=mode)
 
 
+@pytest.mark.parametrize(
+    "method,extra",
+    [
+        ("dbf", {}),
+        ("autobit", {}),
+        ("gptq", {"rotated": True}),
+    ],
+)
+@pytest.mark.parametrize("mode", ["direct", "mixed"])
+def test_export_to_gguf_rejects_incompatible_forced_mode(
+    tmp_path, method: str, extra: dict[str, bool], mode: str
+) -> None:
+    """A forced packed path must reject checkpoints without that capability."""
+    from onecomp.cpu.export.auto import export_to_gguf
+
+    d = _write_quant_config(tmp_path, method, **extra)
+    with pytest.raises(ValueError, match="needs the AutoGPTQ block layout"):
+        export_to_gguf(d, str(tmp_path / "out.gguf"), mode=mode)
+
+
 @pytest.mark.parametrize("method", ["onebit", "mdbf"])
 def test_dequantize_to_hf_rejects_unsupported(tmp_path, method):
     """The low-level entry point guards too; it is public and reached via other paths."""
