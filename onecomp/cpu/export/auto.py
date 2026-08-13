@@ -9,6 +9,7 @@ gptq          AutoGPTQ qweight/qzeros/scales        direct (lossless)
 mixed_gptq    same, per-layer bitwidths             mixed (lossless + K-quant)
 jointq / rtn  same AutoGPTQ layout                  direct (lossless)
 dbf           DoubleBinaryLinear (binary factors)   fallback (dequantize)
+mdbf          multi-path binary factors             fallback (dequantize)
 autobit       mix of gptq/dbf children              fallback (dequantize)
 ============  ====================================  =========================
 
@@ -21,7 +22,7 @@ the dequantize fallback, which folds the Hadamard back into the weight
 (see :mod:`onecomp.cpu.export.rotation`) so the GGUF runs correctly with no
 online operation.
 
-OneBit and MDBF are rejected up-front, for every ``mode``; see
+OneBit is rejected up-front, for every ``mode``; see
 ``UNSUPPORTED_METHODS`` in :mod:`onecomp.cpu.export.checkpoint` for why.
 
 Copyright 2025-2026 Fujitsu Ltd.
@@ -108,8 +109,7 @@ def export_to_gguf(
         out_gguf: Output ``.gguf`` path.
         mode: ``auto`` (route by quant_method/rotation) or force a path with
             ``direct`` / ``mixed`` / ``fallback``. Forcing a path does not
-            override support: an unsupported ``quant_method`` is rejected for
-            every ``mode``.
+            override support or layout requirements.
         qtype: target type for the fallback (dequantize) path, e.g. ``Q4_K_M``.
         original_model: optional original FP model dir for skeleton metadata.
         work_dir: scratch directory.
@@ -118,8 +118,8 @@ def export_to_gguf(
         Summary dict including the chosen ``path`` and per-path details.
 
     Raises:
-        ValueError: If ``quant_method`` is unsupported (any ``mode``), or if
-            ``mode`` is not one of auto/direct/mixed/fallback.
+        ValueError: If the method or forced mode is incompatible, or ``mode``
+            is not one of auto/direct/mixed/fallback.
     """
     plan = plan_export(quantized_dir)
     meta = plan["meta"]

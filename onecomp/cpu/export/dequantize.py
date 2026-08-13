@@ -1,4 +1,4 @@
-"""Reconstruct a dense (fp16) Hugging Face model from an OneComp GPTQ checkpoint.
+"""Reconstruct a dense Hugging Face model from an OneComp checkpoint.
 
 Used for (a) the dequantize -> convert_hf_to_gguf -> llama-quantize fallback path
 and (b) building a metadata/tokenizer "skeleton" GGUF when the original
@@ -264,10 +264,10 @@ def dequantize_to_hf(
     output_directory: str,
     torch_dtype: torch.dtype = torch.float16,
 ) -> str:
-    """Write a dense HF model (dequantized GPTQ weights) to ``output_directory``.
+    """Write a dense HF model to ``output_directory``.
 
     Args:
-        save_directory: An OneComp quantized model directory (gptq/mixed_gptq).
+        save_directory: A supported OneComp quantized model directory.
         output_directory: Destination directory for the dense HF model.
         torch_dtype: dtype of the reconstructed dense weights.
 
@@ -328,9 +328,7 @@ def dequantize_to_hf(
     quant_keys |= dbf_consumed
 
     # MDBF layers use a nested paths.{p}.* layout.
-    mdbf_dense, mdbf_consumed = _dequantize_mdbf_layers(
-        model, state, torch_dtype, save_directory
-    )
+    mdbf_dense, mdbf_consumed = _dequantize_mdbf_layers(model, state, torch_dtype, save_directory)
     dense_state.update(mdbf_dense)
     quant_keys |= mdbf_consumed
 

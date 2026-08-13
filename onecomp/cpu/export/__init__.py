@@ -1,9 +1,9 @@
-"""GGUF export for OneComp GPTQ checkpoints.
+"""GGUF export for OneComp quantized checkpoints.
 
 Modules:
     blocks      -- lossless packing of GPTQ codes into GGUF legacy blocks
     checkpoint  -- read an OneComp GPTQ checkpoint into ``GPTQLayer`` objects
-    dequantize  -- reconstruct a dense fp16 HF model from a GPTQ checkpoint
+    dequantize  -- reconstruct a dense HF model from GPTQ/DBF/MDBF weights
     skeleton    -- build a metadata/tokenizer skeleton GGUF and stitch tensors
     direct      -- direct, lossless GPTQ -> GGUF export (preferred)
     fallback    -- dequantize -> llama-quantize export (re-quantizes; universal)
