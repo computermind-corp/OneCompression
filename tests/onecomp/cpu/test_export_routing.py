@@ -154,7 +154,7 @@ def test_export_to_gguf_rejects_unsupported(tmp_path, method, mode):
 )
 @pytest.mark.parametrize("mode", ["direct", "mixed"])
 def test_export_to_gguf_rejects_incompatible_forced_mode(
-    tmp_path, method: str, extra: dict[str, bool], mode: str
+    tmp_path: Path, method: str, extra: dict[str, bool], mode: str
 ) -> None:
     """A forced packed path must reject checkpoints without that capability."""
     from onecomp.cpu.export.auto import export_to_gguf

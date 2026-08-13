@@ -275,8 +275,8 @@ def dequantize_to_hf(
         ``output_directory``.
 
     Raises:
-        ValueError: If the checkpoint's ``quant_method`` has no dense
-            reconstruction implemented here (see ``UNSUPPORTED_METHODS``).
+        ValueError: If the checkpoint's ``quant_method`` is unsupported, or an
+            MDBF path set or factor shape is invalid.
         RuntimeError: If an MDBF layer cannot be mapped to the dense model, or
             any weight/bias tensor ends up with no checkpoint source.
     """

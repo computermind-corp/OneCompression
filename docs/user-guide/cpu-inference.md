@@ -39,7 +39,7 @@ export_to_gguf("./model", "./model.gguf")  # mode="auto" by default
 | `dbf`, `autobit`          | binary factorization / mixed   | fallback | no (re-quantized) |
 | `mdbf`                    | multi-path binary factorization | fallback | no (re-quantized) |
 | supported method + `rotated=true` | online Hadamard on down_proj | fallback | no (re-quantized) |
-| `onebit`                  | —                              | unsupported (by request) |
+| `onebit`                  | —                              | unsupported (by request) | — |
 
 **QEP** only changes the GPTQ *integer codes* (via pre-quantization weight
 adjustment), so QEP-corrected checkpoints export through the very same lossless
