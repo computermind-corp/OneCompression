@@ -427,6 +427,72 @@ def test_mdbf_layer_absent_from_dense_model_raises(tmp_path: Path) -> None:
         _dequantize_mdbf_layers(torch.nn.Module(), state, torch.float32, save_directory)
 
 
+@pytest.mark.parametrize(
+    "rotated,torch_dtype,rtol,atol",
+    [
+        pytest.param(False, torch.float32, 1e-4, 1e-3, id="plain-fp32"),
+        pytest.param(True, torch.float32, 1e-4, 1e-3, id="rotated-fp32"),
+        pytest.param(False, torch.float16, 0.0, 5e-3, id="plain-fp16"),
+    ],
+)
+def test_mdbf_dequantize_to_hf_matches_loader_logits(
+    tmp_path: Path,
+    rotated: bool,
+    torch_dtype: torch.dtype,
+    rtol: float,
+    atol: float,
+) -> None:
+    """Dense export matches MDBF loader logits for plain and rotated models.
+
+    FP16 uses absolute tolerance because prototype relative error reached 15.7%
+    near zero while the worst absolute error was one ULP (9.766e-4).
+    """
+    from transformers import AutoModelForCausalLM
+
+    from onecomp.cpu.export.dequantize import dequantize_to_hf
+    from onecomp.quantized_model_loader import QuantizedModelLoader
+    from tests.onecomp.fixtures.mdbf_checkpoint import (
+        build_mdbf_model,
+        write_mdbf_save_dir,
+    )
+
+    reference, config, quantized_names = build_mdbf_model(with_bias=False)
+    checkpoint_dir = tmp_path / "checkpoint"
+    dense_dir = tmp_path / "dense"
+    write_mdbf_save_dir(
+        checkpoint_dir,
+        config,
+        reference.state_dict(),
+        quantized_names,
+        rotated=rotated,
+    )
+
+    with patch(
+        "onecomp.quantized_model_loader.AutoTokenizer.from_pretrained",
+        return_value=object(),
+    ):
+        quantized_model, _ = QuantizedModelLoader.load_quantized_model(
+            str(checkpoint_dir),
+            device_map="",
+            local_files_only=True,
+        )
+    quantized_model.to(dtype=torch_dtype).eval()
+
+    dequantize_to_hf(str(checkpoint_dir), str(dense_dir), torch_dtype=torch_dtype)
+    dense_model = AutoModelForCausalLM.from_pretrained(
+        dense_dir,
+        torch_dtype=torch_dtype,
+        local_files_only=True,
+    ).eval()
+
+    generator = torch.Generator().manual_seed(102)
+    input_ids = torch.randint(0, config.vocab_size, (2, 8), generator=generator)
+    with torch.no_grad():
+        expected = quantized_model(input_ids).logits.float()
+        actual = dense_model(input_ids).logits.float()
+    torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
+
+
 def test_hadamard_defold_roundtrip():
     """De-fold inverts the online down_proj Hadamard applied during rotation."""
     from onecomp.cpu.export.rotation import defold_down_proj_hadamard

@@ -75,7 +75,9 @@ def build_mdbf_model(*, with_bias: bool) -> tuple[torch.nn.Module, Any, list[str
         mlp_bias=with_bias,
     )
     config.torch_dtype = torch.float16
-    model = LlamaForCausalLM(config).to(torch.float16).eval()
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        model = LlamaForCausalLM(config).to(torch.float16).eval()
 
     name_to_module = dict(model.named_modules())
     quantized_names: list[str] = []
