@@ -1,9 +1,6 @@
-"""Unit tests for CPU/GGUF export routing, DBF dequant and rotation de-folding.
+"""Tests for CPU/GGUF export routing, dense reconstruction, and rotation de-folding.
 
-These run without any model download or llama.cpp build:
-  * ``read_quant_meta`` / ``plan_export`` route each quant_method correctly,
-  * the DBF dequantize matches ``DoubleBinaryLinear`` forward, and
-  * the rotation Hadamard de-fold inverts the online transform exactly.
+These tests require no model download or llama.cpp build.
 
 Copyright 2025-2026 Fujitsu Ltd.
 """
@@ -132,13 +129,12 @@ def test_needs_mixed_export_helpers():
     ) == {4, 2}
 
 
-@pytest.mark.parametrize("method", ["onebit"])
 @pytest.mark.parametrize("mode", ["auto", "direct", "mixed", "fallback"])
-def test_export_to_gguf_rejects_unsupported(tmp_path, method, mode):
+def test_export_to_gguf_rejects_unsupported(tmp_path: Path, mode: str) -> None:
     """An explicit ``mode`` names a path, not a capability: it must not bypass the guard."""
     from onecomp.cpu.export.auto import export_to_gguf
 
-    d = _write_quant_config(tmp_path, method)
+    d = _write_quant_config(tmp_path, "onebit")
     with pytest.raises(ValueError, match="not supported"):
         export_to_gguf(d, str(tmp_path / "out.gguf"), mode=mode)
 
@@ -178,17 +174,16 @@ def test_export_to_gguf_mdbf_dispatches_fallback(tmp_path: Path, mode: str) -> N
     assert result["path"] == "fallback"
 
 
-@pytest.mark.parametrize("method", ["onebit"])
-def test_dequantize_to_hf_rejects_unsupported(tmp_path, method):
+def test_dequantize_to_hf_rejects_unsupported(tmp_path: Path) -> None:
     """The low-level entry point guards too; it is public and reached via other paths."""
     from onecomp.cpu.export.dequantize import dequantize_to_hf
 
-    d = _write_quant_config(tmp_path, method)
+    d = _write_quant_config(tmp_path, "onebit")
     with pytest.raises(ValueError, match="no dense reconstruction"):
         dequantize_to_hf(d, str(tmp_path / "dense"))
 
 
-def test_reject_unfilled_weights_flags_random_init_tensors():
+def test_reject_unfilled_weights_flags_random_init_tensors() -> None:
     """An unknown layout leaves dense weights unsourced; that must raise, not warn."""
     from onecomp.cpu.export.dequantize import _reject_unfilled_weights
 
@@ -201,23 +196,19 @@ def test_reject_unfilled_weights_flags_random_init_tensors():
         _reject_unfilled_weights(missing, set(), "/ckpt", "future_method")
 
 
-def test_reject_unfilled_weights_ignores_buffers_and_retied_lm_head():
+def test_reject_unfilled_weights_ignores_buffers_and_retied_lm_head() -> None:
+    """Buffers and weights restored by tying are not unfilled parameters."""
     from onecomp.cpu.export.dequantize import _reject_unfilled_weights
 
     _reject_unfilled_weights(["model.rotary_emb.inv_freq"], set(), "/ckpt", "gptq")
-    _reject_unfilled_weights(
-        ["lm_head.weight"], {"lm_head.weight"}, "/ckpt", "gptq"
-    )  # restored by tie_weights()
+    _reject_unfilled_weights(["lm_head.weight"], {"lm_head.weight"}, "/ckpt", "gptq")
 
 
-def test_dequantize_to_hf_rejects_unknown_layout_end_to_end(tmp_path):
-    """``UNSUPPORTED_METHODS`` is an allow-list of *known* gaps; this pins the net.
+def test_dequantize_to_hf_rejects_unknown_layout_end_to_end(tmp_path: Path) -> None:
+    """An unrecognized tensor layout must fail before saving a random-init model.
 
-    A quant_method nobody listed (a future quantizer, or MDBF children hidden
-    inside an ``autobit`` checkpoint) reaches the dequantize body, drops its
-    tensors and leaves the dense weights at ``from_config`` random init. Only an
-    end-to-end call proves ``_reject_unfilled_weights`` is actually wired into
-    ``dequantize_to_hf``; the unit tests above pass even if the call is deleted.
+    This end-to-end call proves ``_reject_unfilled_weights`` remains wired into
+    ``dequantize_to_hf`` for layouts no supported reconstructor recognizes.
     """
     from safetensors.torch import save_file
     from transformers import LlamaConfig
@@ -243,8 +234,8 @@ def test_dequantize_to_hf_rejects_unknown_layout_end_to_end(tmp_path):
     cfg_dict["quantization_config"] = {"quant_method": "future_method", "bits": 2}
     (ckpt / "config.json").write_text(json.dumps(cfg_dict), encoding="utf-8")
 
-    # A layer stored in some unknown factorized form: no ``.weight``, and keys
-    # neither the GPTQ nor the DBF reader recognises.
+    # This unknown factorization has no ``.weight``, and none of the supported
+    # reconstructors recognizes its keys.
     save_file(
         {
             "model.layers.0.self_attn.q_proj.factor_a": torch.zeros(16, 4),
