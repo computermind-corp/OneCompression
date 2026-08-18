@@ -1,6 +1,6 @@
 # Change log
 
-## [v1.3.2(WIP)+feature/mdbf-llamacpp-export] 2026-08-12
+## [v1.3.2(WIP)+feature/mdbf-llamacpp-export] 2026-08-18
 
 ### New Features
 

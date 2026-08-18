@@ -14,7 +14,7 @@ onecomp/cpu/
 │   ├── dequantize.py    GPTQ/DBF/MDBF checkpoint -> dense fp16 HF model
 │   ├── skeleton.py      build metadata/tokenizer skeleton GGUF + stitch tensors
 │   ├── direct.py        direct, lossless GPTQ -> GGUF  (preferred)
-│   └── fallback.py      dequantize -> llama-quantize   (universal, re-quantizes)
+│   └── fallback.py      dequantize -> llama-quantize   (re-quantizes)
 ├── eval/              # CPU-side evaluation
 │   ├── inspect_gguf.py  per-tensor quant types / size / effective bit-width
 │   ├── perplexity.py    CPU perplexity on text

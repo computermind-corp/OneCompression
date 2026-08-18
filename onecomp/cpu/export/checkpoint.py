@@ -184,10 +184,11 @@ def _per_layer_overrides(quant_config: dict) -> Dict[str, Dict[str, int]]:
 
 
 def iter_gptq_layers(save_directory: str) -> Iterator[GPTQLayer]:
-    """Yield every GPTQ-quantized linear in a saved OneComp model, fully unpacked.
+    """Yield every AutoGPTQ-layout linear in a saved OneComp model, fully unpacked.
 
-    Only ``gptq`` / ``mixed_gptq`` checkpoints expose ``qweight`` tensors; other
-    methods (dbf/mdbf/onebit) are skipped here and must use the dequantize path.
+    GPTQ-family checkpoints use ``qweight`` / ``qzeros`` / ``scales`` tensors.
+    Checkpoints without this layout yield no layers here. DBF and MDBF instead
+    use dedicated dense reconstruction helpers; OneBit is unsupported.
     """
     quant_config = load_quant_config(save_directory)
     state = _load_state_dict(save_directory)

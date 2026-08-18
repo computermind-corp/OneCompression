@@ -6,7 +6,7 @@ Modules:
     dequantize  -- reconstruct a dense HF model from GPTQ/DBF/MDBF weights
     skeleton    -- build a metadata/tokenizer skeleton GGUF and stitch tensors
     direct      -- direct, lossless GPTQ -> GGUF export (preferred)
-    fallback    -- dequantize -> llama-quantize export (re-quantizes; universal)
+    fallback    -- dequantize -> llama-quantize export (re-quantizes)
     rotation    -- fold a rotated model's online down_proj Hadamard into weights
     auto        -- single entry point that routes by quant_method / rotation
 
