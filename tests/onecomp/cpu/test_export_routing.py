@@ -407,6 +407,22 @@ def test_mdbf_dequantize_rejects_sign_shape_mismatch(tmp_path: Path, tensor_name
         )
 
 
+@pytest.mark.parametrize("tensor_name", ["_A_sign_shape", "_B_sign_shape"])
+def test_mdbf_dequantize_rejects_sign_shape_buffer_shape(tmp_path: Path, tensor_name: str) -> None:
+    """Malformed sign-shape buffers report shape without expanding values."""
+    from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers
+
+    _, state = _build_mdbf_state(path_count=1, amplitude_rank=1, with_bias=False)
+    key = f"lin.paths.0.{tensor_name}"
+    state[key] = state[key].unsqueeze(0)
+    save_directory = _write_quant_config(tmp_path, "mdbf", P=1)
+
+    with pytest.raises(ValueError, match=r"expected \(2,\), got \(1, 2\)"):
+        _dequantize_mdbf_layers(
+            _MDBFDenseStub(with_bias=False), state, torch.float32, save_directory
+        )
+
+
 def test_mdbf_layer_absent_from_dense_model_raises(tmp_path: Path) -> None:
     """A checkpoint MDBF layer without a dense target is a mapping error."""
     from onecomp.cpu.export.dequantize import _dequantize_mdbf_layers

@@ -149,8 +149,12 @@ def _check_mdbf_shapes(
             tensor = layer_state_dict.get(prefix + tensor_name)
             if tensor is None:
                 continue
-            actual_shape = tuple(int(dim) for dim in tensor.reshape(-1).tolist())
-            if tuple(tensor.shape) != (2,) or actual_shape != expected_shape:
+            tensor_shape = tuple(tensor.shape)
+            if tensor_shape != (2,):
+                _raise_shape(path_index, tensor_name, tensor_shape, (2,))
+
+            actual_shape = tuple(int(dim) for dim in tensor.tolist())
+            if actual_shape != expected_shape:
                 _raise_shape(path_index, tensor_name, actual_shape, expected_shape)
 
 
@@ -173,7 +177,8 @@ def _dequantize_mdbf_layers(
 
     Raises:
         KeyError: If a required MDBF tensor is absent.
-        ValueError: If the checkpoint is incomplete or has invalid shapes.
+        ValueError: If MDBF metadata, path or bias presence, or factor shapes
+            are inconsistent with the dense model.
         RuntimeError: If an MDBF layer has no matching dense module.
     """
     marker_keys = sorted(key for key in state if key.endswith(_MDBF_MARKER))
@@ -191,6 +196,9 @@ def _dequantize_mdbf_layers(
     for marker_key in marker_keys:
         name = marker_key[: -len(_MDBF_MARKER)]
         target = modules.get(name)
+        # Treat either an absent target or one without Linear-compatible input
+        # dimensions as a mapping failure. Only the absent case is invisible to
+        # _reject_unfilled_weights(), but neither can be reconstructed safely.
         if target is None or not hasattr(target, "in_features"):
             raise RuntimeError(
                 f"MDBF layer {name!r} from {save_directory} has no matching "
@@ -200,6 +208,8 @@ def _dequantize_mdbf_layers(
         in_features = int(target.in_features)
         out_features = int(target.out_features)
         prefix = name + "."
+        # Preserve paths.{p} in relative keys so tensors from different paths
+        # do not collide as they would if only the final component were kept.
         layer_state_dict = {
             key[len(prefix) :]: tensor for key, tensor in state.items() if key.startswith(prefix)
         }
@@ -216,6 +226,7 @@ def _dequantize_mdbf_layers(
             layer_state_dict, in_features, out_features
         ).eval()
         with torch.no_grad():
+            # Accumulate over the factor rank and across paths in fp32, then cast.
             weight = layer.get_weight(torch.float32)
         dense[f"{name}.weight"] = weight.to(torch_dtype)
         bias = layer_state_dict.get("bias")
@@ -275,10 +286,11 @@ def dequantize_to_hf(
         ``output_directory``.
 
     Raises:
-        ValueError: If the checkpoint's ``quant_method`` is unsupported, or an
-            MDBF path set or factor shape is invalid.
-        RuntimeError: If an MDBF layer cannot be mapped to the dense model, or
-            any weight/bias tensor ends up with no checkpoint source.
+        KeyError: If a required quantized tensor is absent.
+        ValueError: If the quantization method is unsupported, or MDBF
+            metadata, paths, bias presence, or factor shapes are invalid.
+        RuntimeError: If a quantized layer cannot be mapped to the dense model,
+            or a weight or bias has no checkpoint source.
     """
     from safetensors.torch import load_file
     from transformers import AutoConfig, AutoModelForCausalLM
