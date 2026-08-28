@@ -1,5 +1,13 @@
 # Change log
 
+## [v1.3.3(WIP)+feature/openvino-2026.03] 2026-08-28
+
+### Environment
+
+- Add an isolated OpenVINO 2026.3.1 environment with locked conversion dependencies and a
+  OneComp GPTQ 4-bit export example for text-generation models. Flat checkpoint
+  metadata is normalized in a temporary copy without modifying the source checkpoint.
+
 ## [v1.3.2] 2026-08-24
 
 ### Bug Fix
