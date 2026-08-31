@@ -1,6 +1,6 @@
 # Change log
 
-## [v1.3.3] 2026-08-dd
+## [v1.4.0] 2026-08-dd
 
 ### Enhancement
 
