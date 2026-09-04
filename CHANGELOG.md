@@ -4,6 +4,8 @@
 
 ### Enhancement
 
+- Support fine-tuning router after quantizing expert's of MoE, which can be used as the postprocess. see [GEMQ](https://arxiv.org/abs/2605.23078).
+
 - Add device mode synchronization between ModelConfig and QEPConfig.
 
 ## [v1.3.2] 2026-08-24
