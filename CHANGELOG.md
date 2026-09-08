@@ -1,5 +1,11 @@
 # Change log
 
+## [v1.4.0] 2026-08-dd
+
+### Enhancement
+
+- Support fine-tuning router after quantizing expert's of MoE, which can be used as the postprocess. see [GEMQ](https://arxiv.org/abs/2605.23078).
+
 ## [v1.3.3] 2026-09-03
 
 ### Enhancement
