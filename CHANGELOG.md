@@ -1,12 +1,29 @@
 # Change log
 
-## [v1.3.3(WIP)+feature/openvino-2026.03] 2026-08-28
+## [v1.4.0(WIP)+feature/openvino-2026.03] 2026-09-10
 
 ### Environment
 
 - Add an isolated OpenVINO 2026.3.1 environment with locked conversion dependencies and a
   OneComp GPTQ 4-bit export example for text-generation models. Flat checkpoint
   metadata is normalized in a temporary copy without modifying the source checkpoint.
+
+## [v1.4.0] 2026-08-dd
+
+### Enhancement
+
+- Support fine-tuning router after quantizing expert's of MoE, which can be used as the postprocess. see [GEMQ](https://arxiv.org/abs/2605.23078).
+
+## [v1.3.3] 2026-09-03
+
+### Enhancement
+
+- Add device mode synchronization between ModelConfig and QEPConfig.
+
+### Bug Fix
+
+- Stop saving perm in `GPTQLinear` when `actorder=True`, as it is unnecessary for inference and causes vLLM serving errors.
+- Support retrying Cholesky decomposition with an increased damping coefficient during the QEP loop.
 
 ## [v1.3.2] 2026-08-24
 
