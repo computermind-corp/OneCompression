@@ -1,6 +1,6 @@
 # Change log
 
-## [v1.3.2(WIP)+feature/mdbf-llamacpp-export] 2026-08-18
+## [v1.4.0(WIP)+feature/mdbf-llamacpp-export] 2026-09-10
 
 ### New Features
 
@@ -9,6 +9,37 @@
 ### Bug Fixes
 
 - Reject forced `direct` and `mixed` GGUF modes for non-GPTQ layouts and rotated checkpoints instead of entering an incompatible exporter.
+
+## [v1.4.0] 2026-08-dd
+
+### Enhancement
+
+- Support fine-tuning router after quantizing expert's of MoE, which can be used as the postprocess. see [GEMQ](https://arxiv.org/abs/2605.23078).
+
+## [v1.3.3] 2026-09-03
+
+### Enhancement
+
+- Add device mode synchronization between ModelConfig and QEPConfig.
+
+### Bug Fix
+
+- Stop saving perm in `GPTQLinear` when `actorder=True`, as it is unnecessary for inference and causes vLLM serving errors.
+- Support retrying Cholesky decomposition with an increased damping coefficient during the QEP loop.
+
+## [v1.3.2] 2026-08-24
+
+### Bug Fix
+
+- Fix WikiText dataset loading in clean environments by using the canonical
+  `Salesforce/wikitext` dataset ID for perplexity evaluation and LoRA SFT examples.
+- Fix warning regarding the data type arguments of Transformers.
+- Fixed GemLite AssertionError during CPU inference execution for OneComp with Llama.cpp.
+- Fixed `QuantizedModelLoader.load_quantized_model()` calling `unfuse_moe_experts()` twice on non-fused MoE checkpoints. An earlier unconditional unfuse (run right after building the empty model) was left in place when the checkpoint-aware unfuse (added for gpt-oss fused-MoE support) was introduced. The redundant unconditional call was removed, and the checkpoint-aware unfuse now runs before `_remap_state_dict_keys()` so key remapping still aligns against the unfused per-expert module paths. This also prevents wrongly unfusing gpt-oss fused-MoE checkpoints, whose fused 3D expert tensors must be loaded as-is (`quantized_model_loader.py`).
+
+### Documentation
+
+- Add troubleshooting information for running OneComp with Llama.cpp on macOS.
 
 ## [v1.3.1] 2026-08-06
 
@@ -104,11 +135,11 @@
 
 ### Security
 
-- **Unsafe deserialization hardening (CWE-502)**: `QuantizedModelLoader.load_quantized_model_pt()` (alias `onecomp.load_quantized_model_pt()`) previously called `torch.load(model.pt, weights_only=False)` unconditionally, allowing arbitrary code execution when loading a malicious `.pt` checkpoint. It now refuses to load unless the caller explicitly opts in via `allow_unsafe_deserialization=True`, and emits a strong warning when it does load. For untrusted models, use the safetensors-based `load_quantized_model()`, which does not execute code.
+- **Unsafe deserialization hardening (CVE-2026-73325, CWE-502)**: `QuantizedModelLoader.load_quantized_model_pt()` (alias `onecomp.load_quantized_model_pt()`) previously called `torch.load(model.pt, weights_only=False)` unconditionally, allowing arbitrary code execution when loading a malicious `.pt` checkpoint. It now refuses to load unless the caller explicitly opts in via `allow_unsafe_deserialization=True`, and emits a strong warning when it does load. For untrusted models, use the safetensors-based `load_quantized_model()`, which does not execute code.
   - **Breaking change**: existing callers of `load_quantized_model_pt()` must pass `allow_unsafe_deserialization=True` for trusted `.pt` files.
 - **`Quantizer.load_results()` / `ResultLoader`**: same hardening applied. Loading with `weights_only=False` now requires `allow_unsafe_deserialization=True` (added as a `ResultLoader` field), and logs a warning. The safe `weights_only=True` path is unchanged.
 - Updated docstrings, docs, and the LoRA SFT example to document the risk and the required opt-in.
-- **Credit**: this unsafe deserialization issue (CWE-502) was responsibly disclosed by **Nir Yehoshua, Cipher Security Labs**. Thank you for the report.
+- **Credit**: this unsafe deserialization issue (CVE-2026-73325, CWE-502) was responsibly disclosed by **Nir Yehoshua, Cipher Security Labs**. Thank you for the report.
 
 ## [v1.2.0] 2026-06-08
 
