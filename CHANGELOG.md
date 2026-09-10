@@ -10,6 +10,14 @@
 
 - Reject forced `direct` and `mixed` GGUF modes for non-GPTQ layouts and rotated checkpoints instead of entering an incompatible exporter.
 
+## [v1.4.0(WIP)+feature/openvino-2026.03] 2026-09-10
+
+### Environment
+
+- Add an isolated OpenVINO 2026.3.1 environment with locked conversion dependencies and a
+  OneComp GPTQ 4-bit export example for text-generation models. Flat checkpoint
+  metadata is normalized in a temporary copy without modifying the source checkpoint.
+
 ## [v1.4.0] 2026-08-dd
 
 ### Enhancement
